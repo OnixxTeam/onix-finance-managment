@@ -1,7 +1,8 @@
-"""Проверяем, что запись в таблицу тянет за собой обновление закрепа.
+"""Проверяем сборку бота: запись в таблицу тянет обновление закрепа, а роутеры
+подключены в правильном порядке.
 
-Об этом легко забыть при добавлении нового пути записи, а тесты pinned.py такую
-забывчивость не увидят: там бот вызывается напрямую.
+Об обновлении закрепа легко забыть при добавлении нового пути записи, а тесты
+pinned.py такую забывчивость не увидят: там бот вызывается напрямую.
 """
 
 import asyncio
@@ -25,7 +26,10 @@ def bot_module(monkeypatch):
             add_income=lambda *args: None,
         ),
     )
+    # Роутер справочника — модульный синглтон и к диспетчеру цепляется один раз,
+    # поэтому пересоздаём оба модуля вместе.
     monkeypatch.delitem(sys.modules, "bot", raising=False)
+    monkeypatch.delitem(sys.modules, "bot_catalog", raising=False)
 
     import bot
 
@@ -64,3 +68,39 @@ def test_expense_refreshes_pinned_report(bot_module, monkeypatch):
 
     assert message.answers, "пользователь должен получить подтверждение"
     assert refreshed == [bot_module.TELEGRAM_USER_ID]
+
+
+def test_catalog_router_goes_before_the_catch_all(bot_module):
+    """Название категории приходит обычным текстом. Подключи справочник вторым —
+    и его съест handle_message, который ловит любой текст."""
+    import bot_catalog
+
+    assert bot_module.dp.sub_routers[0] is bot_catalog.router
+    assert bot_module.dp.sub_routers[-1] is bot_module.router
+
+
+def test_report_keyboard_drills_into_categories_by_id(bot_module):
+    """Кнопка адресует категорию id, а не именем: имя редактируемое и длинное имя
+    в кириллице не влезает в 64 байта callback_data."""
+    from catalog import Category
+    from report import Report
+
+    report = Report(title="Август 2026", expense_by_category={"Транспорт": 100.0, "Кино": 900.0})
+    categories = [Category(id=7, name="Транспорт"), Category(id=9, name="Кино")]
+
+    markup = bot_module.build_report_keyboard(report, categories, "prev_month")
+    buttons = [button for row in markup.inline_keyboard for button in row]
+
+    assert [button.text for button in buttons] == ["Кино", "Транспорт"], "порядок как в отчёте"
+    assert [button.callback_data for button in buttons] == [
+        "drill:prev_month:9",
+        "drill:prev_month:7",
+    ]
+
+
+def test_report_keyboard_skips_categories_outside_the_catalog(bot_module):
+    from report import Report
+
+    report = Report(title="Август 2026", expense_by_category={"Забытая": 100.0})
+
+    assert bot_module.build_report_keyboard(report, [], "month") is None
