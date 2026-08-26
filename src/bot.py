@@ -4,7 +4,7 @@ import re
 from contextlib import suppress
 
 from aiogram import Bot, Dispatcher, F, Router
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import (
     CallbackQuery,
     InlineKeyboardMarkup,
@@ -16,6 +16,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 import bot_catalog
 import catalog
+import listing
 from catalog import Category
 from categories import INCOME_CATEGORIES
 from categorizer import get_categorizer
@@ -75,6 +76,7 @@ async def start(message: Message) -> None:
         "Например: кофе 300\n"
         "Отрицательная сумма считается доходом.\n"
         f"Кнопка «{REPORT_BUTTON}» — сводка по доходам, расходам и остатку.\n"
+        "/list N — последние записи.\n"
         "/categories — категории расходов: добавить, переименовать, удалить.",
         reply_markup=MAIN_KEYBOARD,
     )
@@ -133,6 +135,24 @@ async def handle_period_choice(callback: CallbackQuery) -> None:
     entries = await asyncio.to_thread(sheets.fetch_entries)
     report = build_report(entries, period)
     await callback.message.edit_text(format_report(report))
+
+
+@router.message(Command("list"))
+async def show_recent(message: Message, command: CommandObject) -> None:
+    limit = listing.parse_limit(command.args)
+    if limit is None:
+        await message.answer(
+            f"Сколько записей показать? Формат: /list N, "
+            f"по умолчанию {listing.DEFAULT_LIST_SIZE}, максимум {listing.MAX_LIST_SIZE}."
+        )
+        return
+
+    entries = await asyncio.to_thread(sheets.fetch_entries)
+    await message.answer(
+        listing.format_listing(
+            "Последние записи", listing.recent(entries, limit), total=len(entries)
+        )
+    )
 
 
 @router.message(F.text)
