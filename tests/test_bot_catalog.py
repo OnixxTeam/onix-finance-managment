@@ -23,3 +23,14 @@ def test_catalog_text_numbers_categories_and_marks_system():
 
     assert "1. Транспорт" in text
     assert f"2. {SYSTEM_CATEGORY} — служебная" in text
+
+
+def test_commands_are_not_taken_for_category_names():
+    """Иначе «/list 5», набранное вместо названия, станет категорией с таким именем."""
+    from types import SimpleNamespace
+
+    from bot_catalog import NOT_A_COMMAND
+
+    assert NOT_A_COMMAND.resolve(SimpleNamespace(text="Спорт"))
+    assert not NOT_A_COMMAND.resolve(SimpleNamespace(text="/list 5"))
+    assert not NOT_A_COMMAND.resolve(SimpleNamespace(text=None))

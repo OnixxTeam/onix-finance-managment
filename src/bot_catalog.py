@@ -32,10 +32,15 @@ CATALOG_PREFIX = "catalog:"
 
 CANCEL_HINT = "Отменить — /cancel."
 
+# Команду, набранную вместо названия, отдаём основному роутеру: иначе «/list 5»
+# превратится в категорию с таким именем.
+NOT_A_COMMAND = F.text & ~F.text.startswith("/")
+
 
 class CategoryForm(StatesGroup):
     adding = State()
     renaming = State()
+    confirming_rename = State()
 
 
 def catalog_text(categories: list[Category]) -> str:
@@ -67,6 +72,15 @@ def build_pick_keyboard(categories: list[Category], action: str) -> InlineKeyboa
         )
     builder.button(text="⬅️ Назад", callback_data=CATALOG_PREFIX + "list")
     builder.adjust(1)
+    return builder.as_markup()
+
+
+def build_rename_confirm_keyboard() -> InlineKeyboardMarkup:
+    """Новое имя лежит в состоянии диалога: в 64 байта callback_data оно не всегда влезает."""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✏️ Переименовать", callback_data=CATALOG_PREFIX + "renameconfirm")
+    builder.button(text="Отмена", callback_data=CATALOG_PREFIX + "list")
+    builder.adjust(2)
     return builder.as_markup()
 
 
@@ -114,17 +128,12 @@ async def ask_rename_target(callback: CallbackQuery, sheets: SheetsClient) -> No
 async def ask_renamed_name(callback: CallbackQuery, sheets: SheetsClient, state: FSMContext) -> None:
     await callback.answer()
 
-    category_id = int(callback.data.rsplit(":", 1)[1])
-    categories = await asyncio.to_thread(sheets.fetch_categories)
-    category = catalog.find(categories, category_id)
+    _, category = await _picked_category(callback, sheets)
     if category is None:
-        await callback.message.edit_text(
-            "Такой категории больше нет.", reply_markup=build_catalog_keyboard()
-        )
         return
 
     await state.set_state(CategoryForm.renaming)
-    await state.update_data(category_id=category_id)
+    await state.update_data(category_id=category.id)
     await callback.message.edit_text(f"Новое название для «{category.name}»? {CANCEL_HINT}")
 
 
@@ -143,20 +152,15 @@ async def confirm_delete(callback: CallbackQuery, sheets: SheetsClient) -> None:
     """Спрашиваем с числом записей: правка необратима, отката нет."""
     await callback.answer()
 
-    category_id = int(callback.data.rsplit(":", 1)[1])
-    categories = await asyncio.to_thread(sheets.fetch_categories)
-    category = catalog.find(categories, category_id)
+    _, category = await _picked_category(callback, sheets)
     if category is None:
-        await callback.message.edit_text(
-            "Такой категории больше нет.", reply_markup=build_catalog_keyboard()
-        )
         return
 
     affected = await asyncio.to_thread(sheets.count_by_category, category.name)
     await callback.message.edit_text(
         f"Удалить «{category.name}»?\n"
         f"{entries_phrase(affected)} перейдут в «{SYSTEM_CATEGORY}». Отменить будет нельзя.",
-        reply_markup=build_confirm_keyboard(category_id),
+        reply_markup=build_confirm_keyboard(category.id),
     )
 
 
@@ -164,17 +168,12 @@ async def confirm_delete(callback: CallbackQuery, sheets: SheetsClient) -> None:
 async def do_delete(callback: CallbackQuery, bot: Bot, sheets: SheetsClient) -> None:
     await callback.answer()
 
-    category_id = int(callback.data.rsplit(":", 1)[1])
-    categories = await asyncio.to_thread(sheets.fetch_categories)
-    category = catalog.find(categories, category_id)
+    categories, category = await _picked_category(callback, sheets)
     if category is None:
-        await callback.message.edit_text(
-            "Такой категории больше нет.", reply_markup=build_catalog_keyboard()
-        )
         return
 
     try:
-        updated = catalog.delete(categories, category_id)
+        updated = catalog.delete(categories, category.id)
     except CatalogError as error:
         await callback.message.edit_text(str(error), reply_markup=build_catalog_keyboard())
         return
@@ -192,13 +191,14 @@ async def do_delete(callback: CallbackQuery, bot: Bot, sheets: SheetsClient) -> 
 
 @router.message(CategoryForm.adding, Command("cancel"))
 @router.message(CategoryForm.renaming, Command("cancel"))
+@router.message(CategoryForm.confirming_rename, Command("cancel"))
 async def cancel_editing(message: Message, sheets: SheetsClient, state: FSMContext) -> None:
     await state.clear()
     categories = await asyncio.to_thread(sheets.fetch_categories)
     await message.answer(catalog_text(categories), reply_markup=build_catalog_keyboard())
 
 
-@router.message(CategoryForm.adding, F.text)
+@router.message(CategoryForm.adding, NOT_A_COMMAND)
 async def do_add(message: Message, sheets: SheetsClient, state: FSMContext) -> None:
     categories = await asyncio.to_thread(sheets.fetch_categories)
     try:
@@ -215,25 +215,67 @@ async def do_add(message: Message, sheets: SheetsClient, state: FSMContext) -> N
     )
 
 
-@router.message(CategoryForm.renaming, F.text)
-async def do_rename(message: Message, bot: Bot, sheets: SheetsClient, state: FSMContext) -> None:
+@router.message(CategoryForm.renaming, NOT_A_COMMAND)
+async def confirm_rename(message: Message, sheets: SheetsClient, state: FSMContext) -> None:
+    """Имя проверяем сразу, а правку записей подтверждаем: она необратима, как и удаление."""
     data = await state.get_data()
     categories = await asyncio.to_thread(sheets.fetch_categories)
     try:
-        updated, old_name, new_name = catalog.rename(categories, data["category_id"], message.text)
+        _, old_name, new_name = catalog.rename(categories, data["category_id"], message.text)
     except CatalogError as error:
         await message.answer(f"{error} {CANCEL_HINT}")
+        return
+
+    affected = await asyncio.to_thread(sheets.count_by_category, old_name)
+    await state.set_state(CategoryForm.confirming_rename)
+    await state.update_data(new_name=new_name)
+    await message.answer(
+        f"Переименовать «{old_name}» в «{new_name}»?\n"
+        f"{entries_phrase(affected)} обновятся. Отменить будет нельзя.",
+        reply_markup=build_rename_confirm_keyboard(),
+    )
+
+
+@router.callback_query(CategoryForm.confirming_rename, F.data == CATALOG_PREFIX + "renameconfirm")
+async def do_rename(
+    callback: CallbackQuery, bot: Bot, sheets: SheetsClient, state: FSMContext
+) -> None:
+    await callback.answer()
+
+    data = await state.get_data()
+    categories = await asyncio.to_thread(sheets.fetch_categories)
+    try:
+        updated, old_name, new_name = catalog.rename(
+            categories, data["category_id"], data["new_name"]
+        )
+    except CatalogError as error:
+        await state.clear()
+        await callback.message.edit_text(str(error), reply_markup=build_catalog_keyboard())
         return
 
     await state.clear()
     await asyncio.to_thread(sheets.save_categories, updated)
     renamed = await _recategorize(sheets, old_name, new_name)
 
-    await message.answer(
+    await callback.message.edit_text(
         f"Теперь «{new_name}». {entries_phrase(renamed)} обновлены.\n\n" + catalog_text(updated),
         reply_markup=build_catalog_keyboard(),
     )
     await refresh_pinned(bot, sheets, TELEGRAM_USER_ID)
+
+
+async def _picked_category(
+    callback: CallbackQuery, sheets: SheetsClient
+) -> tuple[list[Category], Category | None]:
+    """Справочник и категория, выбранная кнопкой. None — категорию уже удалили:
+    кнопка могла прилететь из старого сообщения. Тогда сами показываем список заново."""
+    categories = await asyncio.to_thread(sheets.fetch_categories)
+    category = catalog.find(categories, int(callback.data.rsplit(":", 1)[1]))
+    if category is None:
+        await callback.message.edit_text(
+            "Такой категории больше нет.", reply_markup=build_catalog_keyboard()
+        )
+    return categories, category
 
 
 async def _recategorize(sheets: SheetsClient, old_name: str, new_name: str) -> int:
