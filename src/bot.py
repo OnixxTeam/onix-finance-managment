@@ -2,6 +2,7 @@ import asyncio
 import logging
 import re
 from contextlib import suppress
+from datetime import date
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command, CommandObject, CommandStart
@@ -22,7 +23,7 @@ from categories import INCOME_CATEGORIES
 from categorizer import get_categorizer
 from config import TELEGRAM_BOT_TOKEN, TELEGRAM_USER_ID
 from pinned import refresh_pinned, run_daily_updates
-from report import PERIODS, build_report, format_amount, format_report
+from report import PERIODS, Report, build_report, format_amount, format_report, period_title
 from sheets import SheetsClient
 
 sheets = SheetsClient()
@@ -59,6 +60,7 @@ REPORT_BUTTON = "📊 Отчёт"
 CATEGORY_PREFIX = "cat:"
 INCOME_PREFIX = "inc:"
 PERIOD_PREFIX = "period:"
+DRILL_PREFIX = "drill:"
 
 MAIN_KEYBOARD = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text=REPORT_BUTTON)]],
@@ -126,6 +128,31 @@ async def ask_period(message: Message) -> None:
     await message.answer("За какой период?", reply_markup=build_period_keyboard())
 
 
+def build_report_keyboard(
+    report: Report, categories: list[Category], period: str
+) -> InlineKeyboardMarkup | None:
+    """Кнопка на каждую категорию расходов из отчёта — переход к её тратам.
+
+    Порядок тот же, что и в тексте отчёта. Категории, которых уже нет в справочнике
+    (правка листа руками), остаются без кнопки: адресовать их нечем.
+    """
+    by_amount = sorted(report.expense_by_category.items(), key=lambda item: item[1], reverse=True)
+
+    builder = InlineKeyboardBuilder()
+    buttons = 0
+    for name, _ in by_amount:
+        category = catalog.find_by_name(categories, name)
+        if category is None:
+            continue
+        builder.button(text=name, callback_data=f"{DRILL_PREFIX}{period}:{category.id}")
+        buttons += 1
+
+    if not buttons:
+        return None
+    builder.adjust(2)
+    return builder.as_markup()
+
+
 @router.callback_query(F.data.startswith(PERIOD_PREFIX))
 async def handle_period_choice(callback: CallbackQuery) -> None:
     await callback.answer()
@@ -133,8 +160,38 @@ async def handle_period_choice(callback: CallbackQuery) -> None:
     period = callback.data.removeprefix(PERIOD_PREFIX)
     # gspread синхронный: без to_thread чтение всего листа блокирует polling.
     entries = await asyncio.to_thread(sheets.fetch_entries)
+    categories = await asyncio.to_thread(sheets.fetch_categories)
     report = build_report(entries, period)
-    await callback.message.edit_text(format_report(report))
+    await callback.message.edit_text(
+        format_report(report),
+        reply_markup=build_report_keyboard(report, categories, period),
+    )
+
+
+@router.callback_query(F.data.startswith(DRILL_PREFIX))
+async def handle_category_drilldown(callback: CallbackQuery) -> None:
+    """Траты одной категории за период отчёта, из которого пришли."""
+    await callback.answer()
+
+    period, raw_id = callback.data.removeprefix(DRILL_PREFIX).split(":", 1)
+    categories = await asyncio.to_thread(sheets.fetch_categories)
+    category = catalog.find(categories, int(raw_id))
+    if category is None:
+        await callback.message.edit_text("Этой категории больше нет — построй отчёт заново.")
+        return
+
+    entries = await asyncio.to_thread(sheets.fetch_entries)
+    matched = listing.in_category(entries, category.name, period)
+    await callback.message.edit_text(
+        listing.format_category_listing(category.name, period_title(period, date.today()), matched),
+        reply_markup=build_back_keyboard(period),
+    )
+
+
+def build_back_keyboard(period: str) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text="⬅️ К отчёту", callback_data=PERIOD_PREFIX + period)
+    return builder.as_markup()
 
 
 @router.message(Command("list"))

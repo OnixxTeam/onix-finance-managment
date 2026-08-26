@@ -20,6 +20,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 import catalog
 from catalog import SYSTEM_CATEGORY, CatalogError, Category
 from config import TELEGRAM_USER_ID
+from listing import entries_phrase
 from pinned import refresh_pinned
 from sheets import SheetsClient
 
@@ -154,7 +155,7 @@ async def confirm_delete(callback: CallbackQuery, sheets: SheetsClient) -> None:
     affected = await asyncio.to_thread(sheets.count_by_category, category.name)
     await callback.message.edit_text(
         f"Удалить «{category.name}»?\n"
-        f"{_entries_phrase(affected)} перейдут в «{SYSTEM_CATEGORY}». Отменить будет нельзя.",
+        f"{entries_phrase(affected)} перейдут в «{SYSTEM_CATEGORY}». Отменить будет нельзя.",
         reply_markup=build_confirm_keyboard(category_id),
     )
 
@@ -182,7 +183,7 @@ async def do_delete(callback: CallbackQuery, bot: Bot, sheets: SheetsClient) -> 
     moved = await _recategorize(sheets, category.name, SYSTEM_CATEGORY)
 
     await callback.message.edit_text(
-        f"Удалил «{category.name}». {_entries_phrase(moved)} перешли в «{SYSTEM_CATEGORY}».\n\n"
+        f"Удалил «{category.name}». {entries_phrase(moved)} перешли в «{SYSTEM_CATEGORY}».\n\n"
         + catalog_text(updated),
         reply_markup=build_catalog_keyboard(),
     )
@@ -229,7 +230,7 @@ async def do_rename(message: Message, bot: Bot, sheets: SheetsClient, state: FSM
     renamed = await _recategorize(sheets, old_name, new_name)
 
     await message.answer(
-        f"Теперь «{new_name}». {_entries_phrase(renamed)} обновлены.\n\n" + catalog_text(updated),
+        f"Теперь «{new_name}». {entries_phrase(renamed)} обновлены.\n\n" + catalog_text(updated),
         reply_markup=build_catalog_keyboard(),
     )
     await refresh_pinned(bot, sheets, TELEGRAM_USER_ID)
@@ -243,12 +244,3 @@ async def _recategorize(sheets: SheetsClient, old_name: str, new_name: str) -> i
     except Exception:
         logger.exception("Не удалось переписать категорию %r на %r", old_name, new_name)
         return 0
-
-
-def _entries_phrase(count: int) -> str:
-    tail = "записей"
-    if count % 10 == 1 and count % 100 != 11:
-        tail = "запись"
-    elif count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
-        tail = "записи"
-    return f"{count} {tail}"

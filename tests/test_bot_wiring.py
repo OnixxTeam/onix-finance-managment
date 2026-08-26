@@ -77,3 +77,30 @@ def test_catalog_router_goes_before_the_catch_all(bot_module):
 
     assert bot_module.dp.sub_routers[0] is bot_catalog.router
     assert bot_module.dp.sub_routers[-1] is bot_module.router
+
+
+def test_report_keyboard_drills_into_categories_by_id(bot_module):
+    """Кнопка адресует категорию id, а не именем: имя редактируемое и длинное имя
+    в кириллице не влезает в 64 байта callback_data."""
+    from catalog import Category
+    from report import Report
+
+    report = Report(title="Август 2026", expense_by_category={"Транспорт": 100.0, "Кино": 900.0})
+    categories = [Category(id=7, name="Транспорт"), Category(id=9, name="Кино")]
+
+    markup = bot_module.build_report_keyboard(report, categories, "prev_month")
+    buttons = [button for row in markup.inline_keyboard for button in row]
+
+    assert [button.text for button in buttons] == ["Кино", "Транспорт"], "порядок как в отчёте"
+    assert [button.callback_data for button in buttons] == [
+        "drill:prev_month:9",
+        "drill:prev_month:7",
+    ]
+
+
+def test_report_keyboard_skips_categories_outside_the_catalog(bot_module):
+    from report import Report
+
+    report = Report(title="Август 2026", expense_by_category={"Забытая": 100.0})
+
+    assert bot_module.build_report_keyboard(report, [], "month") is None

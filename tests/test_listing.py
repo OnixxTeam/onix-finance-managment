@@ -3,8 +3,10 @@ from datetime import date
 from listing import (
     DEFAULT_LIST_SIZE,
     MAX_LIST_SIZE,
+    format_category_listing,
     format_entry_line,
     format_listing,
+    in_category,
     parse_limit,
     recent,
 )
@@ -100,3 +102,48 @@ def test_listing_without_cut_has_no_note():
 
 def test_empty_listing_says_so():
     assert "нет" in format_listing("Последние записи", [], total=0).lower()
+
+
+def test_in_category_filters_by_name_and_period():
+    entries = [
+        expense("прошлый месяц", day=date(2026, 7, 20)),
+        expense("этот месяц", day=date(2026, 8, 3)),
+        Entry(
+            day=date(2026, 8, 4),
+            description="кино",
+            amount=500.0,
+            category="Развлечения",
+            entry_type=TYPE_EXPENSE,
+        ),
+    ]
+
+    matched = in_category(entries, "Транспорт", "month", today=date(2026, 8, 26))
+
+    assert [entry.description for entry in matched] == ["этот месяц"]
+
+
+def test_in_category_returns_newest_first():
+    entries = [expense("первая"), expense("вторая")]
+
+    matched = in_category(entries, "Транспорт", "all", today=date(2026, 8, 26))
+
+    assert [entry.description for entry in matched] == ["вторая", "первая"]
+
+
+def test_category_listing_shows_total_and_count():
+    matched = [expense("такси", amount=300), expense("метро", amount=70)]
+
+    text = format_category_listing("Транспорт", "Август 2026", matched)
+
+    assert "Транспорт — Август 2026" in text
+    assert "370" in text
+    assert "2 записи" in text
+    assert text.count("Транспорт") == 1, "категория уже в заголовке, в строках она лишняя"
+
+
+def test_category_listing_cuts_long_history():
+    matched = [expense(f"трата {number}") for number in range(MAX_LIST_SIZE + 5)]
+
+    text = format_category_listing("Транспорт", "Август 2026", matched)
+
+    assert f"Показал {MAX_LIST_SIZE} из {MAX_LIST_SIZE + 5}." in text

@@ -65,13 +65,26 @@ def format_entry_line(number: int, entry: Entry, show_category: bool = True) -> 
     return line
 
 
+def entries_phrase(count: int) -> str:
+    tail = "записей"
+    if count % 10 == 1 and count % 100 != 11:
+        tail = "запись"
+    elif count % 10 in (2, 3, 4) and count % 100 not in (12, 13, 14):
+        tail = "записи"
+    return f"{count} {tail}"
+
+
 def format_listing(
     title: str,
     entries: list[Entry],
     total: int,
     show_category: bool = True,
+    subtitle: str | None = None,
 ) -> str:
-    lines = [f"🧾 {title}", ""]
+    lines = [f"🧾 {title}"]
+    if subtitle is not None:
+        lines.append(subtitle)
+    lines.append("")
 
     if not entries:
         lines.append("Записей нет.")
@@ -85,3 +98,17 @@ def format_listing(
     if total > len(entries):
         lines += ["", f"Показал {len(entries)} из {total}."]
     return "\n".join(lines)
+
+
+def format_category_listing(
+    category: str, period_title: str, matched: list[Entry], limit: int = MAX_LIST_SIZE
+) -> str:
+    """Траты одной категории за период. Категорию в строках не повторяем — она в заголовке."""
+    total_amount = sum(entry.amount for entry in matched)
+    return format_listing(
+        f"{category} — {period_title}",
+        matched[:limit],
+        total=len(matched),
+        show_category=False,
+        subtitle=f"{format_amount(total_amount)} · {entries_phrase(len(matched))}",
+    )
